@@ -115,3 +115,4 @@ canvas { display: block; }
 @media (hover: none) and (pointer: coarse) {
   #touchControls { display: flex; }
 }
+body.touch-device #touchControls { display: flex; }

@@ -45,6 +45,13 @@
   <button class="touch-btn touch-boost" id="btnBoost">BOOST</button>
 </div>
 
+<!-- Detect touch support early so CSS can respond reliably -->
+<script>
+  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+    document.body.classList.add('touch-device');
+  }
+</script>
+
 <!-- Three.js from CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="game.js"></script>

@@ -9,6 +9,14 @@ const GROUND_Y       = -8;        // y position of ground (death line)
 const PLAYER_RADIUS  = 0.5;
 const HONEY_RADIUS   = 0.35;
 const WASP_HALF      = 0.45;
+const BOMB_RADIUS    = 0.28;
+const BOMB_FORWARD_SPEED = 11;
+const BOMB_START_VERTICAL_SPEED = 0;
+const BOMB_GRAVITY = -11;
+const INITIAL_BOMBS  = 10;
+const MAX_BOMBS      = 10;
+const HONEY_ITEMS_PER_BOMB = 10;
+const EXPLOSION_LIFE = 0.65;
 const PLATFORM_HW    = 1.1;       // platform half-width
 const PLATFORM_HH    = 0.225;     // platform half-height
 const HONEY_OFFSET_Y = 0.65;      // honey floats this far above platform center
@@ -148,6 +156,71 @@ class SoundManager {
     oscillator.type = 'sawtooth';
     oscillator.start();
     oscillator.stop(this.audioContext.currentTime + 0.3);
+  }
+
+  /** Play a short pop for bomb explosions. */
+  playBomb() {
+    if (!this.enabled || !this.audioContext) return;
+
+    const now = this.audioContext.currentTime;
+
+    // Low boom with a fast pitch dive.
+    const boom = this.audioContext.createOscillator();
+    const boomGain = this.audioContext.createGain();
+    const boomFilter = this.audioContext.createBiquadFilter();
+
+    boom.connect(boomFilter);
+    boomFilter.connect(boomGain);
+    boomGain.connect(this.audioContext.destination);
+
+    boom.type = 'sawtooth';
+    boom.frequency.setValueAtTime(180, now);
+    boom.frequency.exponentialRampToValueAtTime(32, now + 0.42);
+    boomFilter.type = 'lowpass';
+    boomFilter.frequency.setValueAtTime(900, now);
+    boomFilter.frequency.exponentialRampToValueAtTime(120, now + 0.42);
+    boomGain.gain.setValueAtTime(0, now);
+    boomGain.gain.linearRampToValueAtTime(this.masterVolume * 0.8, now + 0.015);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+    boom.start(now);
+    boom.stop(now + 0.55);
+
+    // Short filtered noise burst for the explosive crack.
+    const noiseBuffer = this.audioContext.createBuffer(1, this.audioContext.sampleRate * 0.28, this.audioContext.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < output.length; i++) {
+      output[i] = (Math.random() * 2 - 1) * (1 - i / output.length);
+    }
+
+    const crack = this.audioContext.createBufferSource();
+    const crackGain = this.audioContext.createGain();
+    const crackFilter = this.audioContext.createBiquadFilter();
+    crack.buffer = noiseBuffer;
+    crack.connect(crackFilter);
+    crackFilter.connect(crackGain);
+    crackGain.connect(this.audioContext.destination);
+
+    crackFilter.type = 'bandpass';
+    crackFilter.frequency.setValueAtTime(750, now);
+    crackFilter.Q.setValueAtTime(0.9, now);
+    crackGain.gain.setValueAtTime(0, now);
+    crackGain.gain.linearRampToValueAtTime(this.masterVolume * 0.7, now + 0.005);
+    crackGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+    crack.start(now);
+
+    // Tiny bright ping so hits feel sharp, not muddy.
+    const ping = this.audioContext.createOscillator();
+    const pingGain = this.audioContext.createGain();
+    ping.connect(pingGain);
+    pingGain.connect(this.audioContext.destination);
+    ping.type = 'square';
+    ping.frequency.setValueAtTime(920, now + 0.02);
+    ping.frequency.exponentialRampToValueAtTime(280, now + 0.18);
+    pingGain.gain.setValueAtTime(0, now + 0.02);
+    pingGain.gain.linearRampToValueAtTime(this.masterVolume * 0.18, now + 0.035);
+    pingGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    ping.start(now + 0.02);
+    ping.stop(now + 0.2);
   }
 
   /** Start background music - gentle ambient melody */
@@ -460,22 +533,24 @@ class ObjectPool {
 }
 
 // ============================================================
-//  INPUT HANDLER - arrow keys (held) + space (one-shot)
+//  INPUT HANDLER - arrow keys (held) + space/B (one-shot)
 // ============================================================
 class InputHandler {
   constructor() {
     this._keys = {};          // held keys
     this._jumpPressed = false; // consumed once per press
+    this._bombPressed = false;
     this._pausePressed = false;
     this._touchDir = 0;       // touch horizontal direction
 
     window.addEventListener('keydown', e => {
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowDown' ||
-          e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+          e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'KeyB') {
         e.preventDefault();
       }
       this._keys[e.code] = true;
       if (e.code === 'Space' || e.code === 'ArrowUp') this._jumpPressed = true;
+      if (e.code === 'KeyB' && !e.repeat) this._bombPressed = true;
       if (e.code === 'KeyP' || e.code === 'Escape') this._pausePressed = true;
     });
 
@@ -485,10 +560,10 @@ class InputHandler {
 
     // Click / tap to start & jump (only non-button taps)
     window.addEventListener('mousedown', e => {
-      if (!e.target.closest('#touchControls, #pauseOverlay')) this._jumpPressed = true;
+      if (!e.target.closest('#touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
     });
     window.addEventListener('touchstart', e => {
-      if (!e.target.closest('#touchControls, #pauseOverlay')) this._jumpPressed = true;
+      if (!e.target.closest('#touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
     });
 
     // Mobile touch controls
@@ -499,6 +574,8 @@ class InputHandler {
     const btnLeft  = document.getElementById('btnLeft');
     const btnRight = document.getElementById('btnRight');
     const btnBoost = document.getElementById('btnBoost');
+    const btnBombTouch = document.getElementById('btnBombTouch');
+    const btnBombDesktop = document.getElementById('btnBombDesktop');
     if (!btnLeft) return;
 
     const hold = (btn, action, release) => {
@@ -516,6 +593,17 @@ class InputHandler {
       e.preventDefault();
       this._jumpPressed = true;
     }, { passive: false });
+
+    const pressBomb = e => {
+      e.preventDefault();
+      this._bombPressed = true;
+    };
+    if (btnBombTouch) {
+      btnBombTouch.addEventListener('touchstart', pressBomb, { passive: false });
+    }
+    if (btnBombDesktop) {
+      btnBombDesktop.addEventListener('click', pressBomb);
+    }
   }
 
   /** Returns -1 (left), 0 (none), or 1 (right). */
@@ -530,6 +618,12 @@ class InputHandler {
   /** Consume the jump flag (returns true once per press). */
   consumeJump() {
     if (this._jumpPressed) { this._jumpPressed = false; return true; }
+    return false;
+  }
+
+  /** Consume the bomb flag. */
+  consumeBomb() {
+    if (this._bombPressed) { this._bombPressed = false; return true; }
     return false;
   }
 
@@ -1260,6 +1354,222 @@ class EnemyManager {
 }
 
 // ============================================================
+//  BOMB MANAGER - bee shoots bombs that destroy wasps
+// ============================================================
+class BombManager {
+  constructor(scene) {
+    this.scene = scene;
+    this.pool = new ObjectPool(() => {
+      const g = new THREE.Group();
+
+      const body = new THREE.Mesh(
+        new THREE.CircleGeometry(BOMB_RADIUS, 18),
+        new THREE.MeshBasicMaterial({ color: 0x222222 })
+      );
+      g.add(body);
+
+      const shine = new THREE.Mesh(
+        new THREE.CircleGeometry(BOMB_RADIUS * 0.28, 8),
+        new THREE.MeshBasicMaterial({ color: 0x666666, transparent: true, opacity: 0.65 })
+      );
+      shine.position.set(-BOMB_RADIUS * 0.28, BOMB_RADIUS * 0.24, 0.02);
+      g.add(shine);
+
+      const fuse = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.06, 0.34),
+        new THREE.MeshBasicMaterial({ color: 0x5a3515 })
+      );
+      fuse.position.set(0.08, BOMB_RADIUS + 0.1, 0.01);
+      fuse.rotation.z = -0.45;
+      g.add(fuse);
+
+      const spark = new THREE.Mesh(
+        new THREE.CircleGeometry(0.07, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffd54f })
+      );
+      spark.position.set(0.2, BOMB_RADIUS + 0.24, 0.02);
+      g.add(spark);
+      g.userData.spark = spark;
+
+      g.visible = false;
+      this.scene.add(g);
+      return g;
+    }, 6);
+  }
+
+  drop(player) {
+    const bomb = this.pool.acquire();
+    const forward = player.facingRight ? 1 : -1;
+    bomb.position.set(player.x + forward * player.radius * 0.8, player.y - player.radius * 0.25, 0.05);
+    bomb.rotation.z = 0;
+    bomb.userData.vx = forward * BOMB_FORWARD_SPEED + player.vx * 0.15;
+    bomb.userData.vy = BOMB_START_VERTICAL_SPEED;
+  }
+
+  update(dt, camLeft, camRight) {
+    const t = performance.now() * 0.01;
+    this.pool.forEachActive(bomb => {
+      bomb.userData.vy += BOMB_GRAVITY * dt;
+      bomb.position.x += bomb.userData.vx * dt;
+      bomb.position.y += bomb.userData.vy * dt;
+      bomb.rotation.z += dt * 8 * Math.sign(bomb.userData.vx || 1);
+
+      if (bomb.userData.spark) {
+        const pulse = 0.8 + Math.sin(t + bomb.position.x) * 0.25;
+        bomb.userData.spark.scale.set(pulse, pulse, 1);
+      }
+
+      if (bomb.position.y < GROUND_Y - 1 ||
+          bomb.position.x < camLeft - 8 ||
+          bomb.position.x > camRight + 8) {
+        this.pool.release(bomb);
+      }
+    });
+  }
+
+  destroyHitWasps(enemyManager, effectsManager) {
+    let destroyed = 0;
+    this.pool.forEachActive(bomb => {
+      enemyManager.pool.forEachActive(wasp => {
+        if (!bomb.visible || !wasp.visible) return;
+
+        const dx = bomb.position.x - wasp.position.x;
+        const dy = bomb.position.y - wasp.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < BOMB_RADIUS + WASP_HALF * 1.1) {
+          effectsManager.spawnWaspExplosion(wasp);
+          this.pool.release(bomb);
+          enemyManager.pool.release(wasp);
+          destroyed++;
+        }
+      });
+    });
+    return destroyed;
+  }
+
+  reset() {
+    this.pool.releaseAll();
+  }
+}
+
+// ============================================================
+//  EFFECT MANAGER - explosions and wasp breakup pieces
+// ============================================================
+class EffectManager {
+  constructor(scene) {
+    this.scene = scene;
+    this._effects = [];
+  }
+
+  spawnWaspExplosion(wasp) {
+    const effect = new THREE.Group();
+    effect.position.copy(wasp.position);
+    effect.scale.copy(wasp.scale);
+    effect.rotation.z = wasp.rotation.z;
+    effect.userData.life = EXPLOSION_LIFE;
+    effect.userData.maxLife = EXPLOSION_LIFE;
+    effect.userData.parts = [];
+
+    const flash = new THREE.Mesh(
+      new THREE.CircleGeometry(0.9, 20),
+      new THREE.MeshBasicMaterial({ color: 0xfff176, transparent: true, opacity: 0.85 })
+    );
+    flash.position.z = 0.2;
+    flash.userData.effectType = 'flash';
+    effect.add(flash);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.25, 0.34, 28),
+      new THREE.MeshBasicMaterial({ color: 0xff6d00, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+    );
+    ring.position.z = 0.21;
+    ring.userData.effectType = 'ring';
+    effect.add(ring);
+
+    for (const child of wasp.children) {
+      if (!child.isMesh) continue;
+
+      const part = child.clone();
+      part.material = child.material.clone();
+      part.material.transparent = true;
+      part.material.opacity = child.material.opacity !== undefined ? child.material.opacity : 1;
+      part.position.copy(child.position);
+      part.rotation.copy(child.rotation);
+      part.scale.copy(child.scale);
+
+      const outward = new THREE.Vector2(part.position.x, part.position.y);
+      if (outward.lengthSq() < 0.01) {
+        outward.set(Math.random() - 0.5, Math.random() - 0.5);
+      }
+      outward.normalize();
+
+      const speed = 2.6 + Math.random() * 3.2;
+      part.userData.vx = outward.x * speed + (Math.random() - 0.5) * 2.4;
+      part.userData.vy = outward.y * speed + 2.0 + Math.random() * 2.0;
+      part.userData.spin = (Math.random() - 0.5) * 12;
+      part.userData.startOpacity = part.material.opacity;
+      part.userData.effectType = 'part';
+
+      effect.userData.parts.push(part);
+      effect.add(part);
+    }
+
+    this.scene.add(effect);
+    this._effects.push(effect);
+  }
+
+  update(dt, camLeft) {
+    for (let i = this._effects.length - 1; i >= 0; i--) {
+      const effect = this._effects[i];
+      effect.userData.life -= dt;
+      const life = Math.max(effect.userData.life, 0);
+      const progress = 1 - life / effect.userData.maxLife;
+
+      for (const child of effect.children) {
+        if (child.userData.effectType === 'part') {
+          child.userData.vy -= 6 * dt;
+          child.position.x += child.userData.vx * dt;
+          child.position.y += child.userData.vy * dt;
+          child.rotation.z += child.userData.spin * dt;
+          child.material.opacity = child.userData.startOpacity * life / effect.userData.maxLife;
+        } else if (child.userData.effectType === 'flash') {
+          const scale = 1 + progress * 1.5;
+          child.scale.set(scale, scale, 1);
+          child.material.opacity = 0.85 * Math.max(0, 1 - progress * 2.5);
+        } else if (child.userData.effectType === 'ring') {
+          const scale = 1 + progress * 4;
+          child.scale.set(scale, scale, 1);
+          child.material.opacity = 0.95 * life / effect.userData.maxLife;
+        }
+      }
+
+      if (effect.userData.life <= 0 || effect.position.x < camLeft - 10) {
+        this._disposeEffect(effect);
+        this._effects.splice(i, 1);
+      }
+    }
+  }
+
+  reset() {
+    for (const effect of this._effects) {
+      this._disposeEffect(effect);
+    }
+    this._effects = [];
+  }
+
+  _disposeEffect(effect) {
+    this.scene.remove(effect);
+    for (const child of effect.children) {
+      if (child.material) child.material.dispose();
+      if (child.userData.effectType === 'flash' || child.userData.effectType === 'ring') {
+        child.geometry.dispose();
+      }
+    }
+  }
+}
+
+// ============================================================
 //  GAME - main controller
 // ============================================================
 class Game {
@@ -1286,11 +1596,15 @@ class Game {
     this.platforms    = new PlatformManager(this.scene);
     this.collectibles = new CollectibleManager(this.scene);
     this.enemies      = new EnemyManager(this.scene);
+    this.bombs        = new BombManager(this.scene);
+    this.effects      = new EffectManager(this.scene);
     this.sound        = new SoundManager();
 
     // -- State --
     this.score = 0;
     this.honeyScore = 0;
+    this.bombCount = INITIAL_BOMBS;
+    this._honeySinceBomb = 0;
     this.health = 100;           // 0-100, each wasp hit = -10
     this._invincibleTimer = 0;   // seconds of invincibility after a hit
     this.highScore = parseInt(localStorage.getItem('bw_high') || '0', 10);
@@ -1306,6 +1620,11 @@ class Game {
     // -- DOM refs --
     this._scoreEl      = document.getElementById('scoreDisplay');
     this._highScoreEl  = document.getElementById('highScoreDisplay');
+    this._bombEl       = document.getElementById('bombDisplay');
+    this._bombButtons  = [
+      document.getElementById('btnBombDesktop'),
+      document.getElementById('btnBombTouch'),
+    ].filter(Boolean);
     this._healthFill   = document.getElementById('healthFill');
     this._overlay      = document.getElementById('overlay');
     this._overlayTitle = document.getElementById('overlayTitle');
@@ -1455,6 +1774,8 @@ class Game {
   start() {
     this.score = 0;
     this.honeyScore = 0;
+    this.bombCount = INITIAL_BOMBS;
+    this._honeySinceBomb = 0;
     this.health = 100;
     this._invincibleTimer = 0;
     this._furthestX = 0;
@@ -1463,6 +1784,8 @@ class Game {
     this.platforms.reset();
     this.collectibles.reset();
     this.enemies.reset();
+    this.bombs.reset();
+    this.effects.reset();
 
     // Spawn the starting platform directly under the player
     const startH = 4; // starting flower height
@@ -1529,6 +1852,11 @@ class Game {
 
   _updateHUD() {
     this._scoreEl.textContent = this.score;
+    this._bombEl.textContent = `Bombs: ${this.bombCount}`;
+    for (const btn of this._bombButtons) {
+      btn.classList.toggle('empty', this.bombCount <= 0);
+      btn.setAttribute('aria-disabled', this.bombCount <= 0 ? 'true' : 'false');
+    }
     this._healthFill.style.width = this.health + '%';
   }
 
@@ -1545,6 +1873,7 @@ class Game {
 
     // Handle start / restart
     if (!this.running && !this.paused) {
+      this.input.consumeBomb();
       if (this.input.consumeJump()) this.start();
       this.renderer.render(this.scene, this.camera);
       return;
@@ -1552,6 +1881,7 @@ class Game {
 
     // If paused, just render and return
     if (this.paused) {
+      this.input.consumeBomb();
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -1561,6 +1891,11 @@ class Game {
     if (this.input.consumeJump()) {
       this.player.boost();
       this.sound.playBuzz();
+    }
+    if (this.input.consumeBomb() && this.bombCount > 0) {
+      this.bombCount--;
+      this.bombs.drop(this.player);
+      this._updateHUD();
     }
 
     // -- Update player --
@@ -1607,10 +1942,26 @@ class Game {
     this.enemies.spawnAhead(camRight);
     this.enemies.update(dt, camLeft);
 
+    this.bombs.update(dt, camLeft, camRight);
+    const waspsDestroyed = this.bombs.destroyHitWasps(this.enemies, this.effects);
+    if (waspsDestroyed > 0) {
+      this._triggerShake(0.4, 0.3);
+      this.sound.playBomb();
+    }
+    this.effects.update(dt, camLeft);
+
     // -- Collect honey --
     const collected = this.collectibles.collect(this.player);
     if (collected > 0) {
       this.honeyScore += collected * 10;
+      this._honeySinceBomb += collected;
+      while (this._honeySinceBomb >= HONEY_ITEMS_PER_BOMB && this.bombCount < MAX_BOMBS) {
+        this.bombCount++;
+        this._honeySinceBomb -= HONEY_ITEMS_PER_BOMB;
+      }
+      if (this.bombCount >= MAX_BOMBS) {
+        this._honeySinceBomb = Math.min(this._honeySinceBomb, HONEY_ITEMS_PER_BOMB - 1);
+      }
       this.sound.playChime();
     }
 

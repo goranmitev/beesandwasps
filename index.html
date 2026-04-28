@@ -4,7 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bees & Wasps - Endless Runner</title>
-<link rel="stylesheet" href="style.css?v=69815b3">
+<script>
+  (function () {
+    const localHosts = ['', 'localhost', '127.0.0.1', '::1'];
+    const isProd = !localHosts.includes(window.location.hostname);
+    window.BW_ASSET_VERSION = isProd ? Date.now().toString(36) : 'dev';
+    document.write('<link rel="stylesheet" href="style.css?v=' + window.BW_ASSET_VERSION + '">');
+  })();
+</script>
 </head>
 <body>
 
@@ -63,6 +70,12 @@
 
 <!-- Three.js from CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="game.js?v=69815b3"></script>
+<script>
+  (function () {
+    const script = document.createElement('script');
+    script.src = 'game.js?v=' + window.BW_ASSET_VERSION;
+    document.body.appendChild(script);
+  })();
+</script>
 </body>
 </html>

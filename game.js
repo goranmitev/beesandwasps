@@ -55,6 +55,8 @@ class SoundManager {
     this.musicOscillators = [];
     this.musicGainNode = null;
     this.musicPlaying = false;
+    this.musicRequested = false;
+    this.musicLoopTimer = null;
 
     // Ambient sound timers
     this.lastAmbientSound = 0;
@@ -67,6 +69,9 @@ class SoundManager {
       document.removeEventListener('click', this._initAudio);
       document.removeEventListener('keydown', this._initAudio);
       document.removeEventListener('touchstart', this._initAudio);
+      if (this.musicRequested && this.musicEnabled) {
+        this.startMusic();
+      }
     };
 
     document.addEventListener('click', this._initAudio);
@@ -225,7 +230,9 @@ class SoundManager {
 
   /** Start background music - gentle ambient melody */
   startMusic() {
-    if (!this.musicEnabled || !this.audioContext || this.musicPlaying) return;
+    if (!this.musicEnabled) return;
+    this.musicRequested = true;
+    if (!this.audioContext || this.musicPlaying) return;
 
     this.musicGainNode = this.audioContext.createGain();
     this.musicGainNode.connect(this.audioContext.destination);
@@ -272,11 +279,16 @@ class SoundManager {
     this.musicPlaying = true;
 
     // Schedule the next loop
-    setTimeout(() => this._loopMusic(), totalDuration * 1000);
+    this._scheduleMusicLoop(totalDuration);
   }
 
   /** Stop background music */
   stopMusic() {
+    this.musicRequested = false;
+    if (this.musicLoopTimer) {
+      clearTimeout(this.musicLoopTimer);
+      this.musicLoopTimer = null;
+    }
     if (!this.musicPlaying) return;
 
     this.musicOscillators.forEach(osc => {
@@ -288,7 +300,8 @@ class SoundManager {
 
   /** Loop the background music */
   _loopMusic() {
-    if (!this.musicPlaying || !this.musicEnabled) return;
+    this.musicLoopTimer = null;
+    if (!this.musicRequested || !this.musicPlaying || !this.musicEnabled || !this.audioContext) return;
 
     const melody = [
       { freq: 261.63, duration: 1.5 }, // C4
@@ -325,12 +338,17 @@ class SoundManager {
     });
 
     // Schedule next loop
-    setTimeout(() => this._loopMusic(), totalDuration * 1000);
+    this._scheduleMusicLoop(totalDuration);
+  }
+
+  _scheduleMusicLoop(delaySeconds) {
+    if (this.musicLoopTimer) clearTimeout(this.musicLoopTimer);
+    this.musicLoopTimer = setTimeout(() => this._loopMusic(), delaySeconds * 1000);
   }
 
   /** Play ambient nature sounds */
   playAmbientSounds() {
-    if (!this.ambientEnabled || !this.audioContext) return;
+    if (!this.enabled || !this.ambientEnabled || !this.audioContext) return;
 
     const now = this.audioContext.currentTime;
     if (now - this.lastAmbientSound < this.ambientInterval / 1000) return;
@@ -474,14 +492,11 @@ class SoundManager {
 
   setEnabled(enabled) {
     this.enabled = enabled;
-    if (!enabled) {
-      this.stopMusic();
-    }
   }
 
   setMusicEnabled(enabled) {
     this.musicEnabled = enabled;
-    if (enabled && this.audioContext) {
+    if (enabled) {
       this.startMusic();
     } else {
       this.stopMusic();
@@ -490,6 +505,7 @@ class SoundManager {
 
   setAmbientEnabled(enabled) {
     this.ambientEnabled = enabled;
+    this.setEnabled(enabled);
   }
 }
 
@@ -560,10 +576,10 @@ class InputHandler {
 
     // Click / tap to start & jump (only non-button taps)
     window.addEventListener('mousedown', e => {
-      if (!e.target.closest('#touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
+      if (!e.target.closest('#audioControls, #touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
     });
     window.addEventListener('touchstart', e => {
-      if (!e.target.closest('#touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
+      if (!e.target.closest('#audioControls, #touchControls, #desktopBombControl, #pauseOverlay')) this._jumpPressed = true;
     });
 
     // Mobile touch controls
@@ -1659,8 +1675,8 @@ class Game {
 
     if (ambientBtn) {
       ambientBtn.addEventListener('click', () => {
-        this.sound.setAmbientEnabled(!this.sound.ambientEnabled);
-        ambientBtn.classList.toggle('disabled', !this.sound.ambientEnabled);
+        this.sound.setAmbientEnabled(!this.sound.enabled);
+        ambientBtn.classList.toggle('disabled', !this.sound.enabled);
         this._saveAudioSettings();
       });
     }
@@ -1825,13 +1841,13 @@ class Game {
 
   _loadAudioSettings() {
     const musicEnabled = localStorage.getItem('bw_music_enabled');
-    const ambientEnabled = localStorage.getItem('bw_ambient_enabled');
+    const soundEnabled = localStorage.getItem('bw_sound_enabled') ?? localStorage.getItem('bw_ambient_enabled');
 
     if (musicEnabled !== null) {
       this.sound.musicEnabled = musicEnabled === 'true';
     }
-    if (ambientEnabled !== null) {
-      this.sound.ambientEnabled = ambientEnabled === 'true';
+    if (soundEnabled !== null) {
+      this.sound.setAmbientEnabled(soundEnabled === 'true');
     }
 
     // Update button states
@@ -1841,13 +1857,14 @@ class Game {
       musicBtn.classList.toggle('disabled', !this.sound.musicEnabled);
     }
     if (ambientBtn) {
-      ambientBtn.classList.toggle('disabled', !this.sound.ambientEnabled);
+      ambientBtn.classList.toggle('disabled', !this.sound.enabled);
     }
   }
 
   _saveAudioSettings() {
     localStorage.setItem('bw_music_enabled', this.sound.musicEnabled);
-    localStorage.setItem('bw_ambient_enabled', this.sound.ambientEnabled);
+    localStorage.setItem('bw_sound_enabled', this.sound.enabled);
+    localStorage.setItem('bw_ambient_enabled', this.sound.enabled);
   }
 
   _updateHUD() {
